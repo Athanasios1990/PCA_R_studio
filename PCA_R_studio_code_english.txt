@@ -1,0 +1,169 @@
+# --- MINIMAL ROBUST SCRIPT FOR THE OBJECT: PCA_Seul_decathlon_R ---
+# install.packages("readxl")
+library(readxl)
+
+# Close any active sinks so that printed output is visible
+while (sink.number() > 0) sink()
+
+# Packages
+req <- c("psych", "writexl")
+to_install <- setdiff(req, rownames(installed.packages()))
+if (length(to_install) > 0) install.packages(to_install, dependencies = TRUE)
+invisible(lapply(req, library, character.only = TRUE))
+
+cat("Working directory:", getwd(), "\n")
+
+# 0) Get the dataset and CONVERT IT to a data.frame
+if (!exists("PCA_Seul_decathlon_R")) stop("Object 'PCA_Seul_decathlon_R' not found.")
+df <- as.data.frame(PCA_Seul_decathlon_R)
+
+cat("Object classes:", paste(class(df), collapse = ", "), "\n")
+
+# 1) Keep only numeric columns, using base R only (not dplyr)
+num_cols <- vapply(df, is.numeric, logical(1))
+if (sum(num_cols) < 2L) stop("At least 2 numeric variables are required for PCA.")
+num_df <- df[, num_cols, drop = FALSE]
+
+# 2) Complete cases
+keep_idx <- stats::complete.cases(num_df)
+num_df <- num_df[keep_idx, , drop = FALSE]
+cat("Dimensions of numeric matrix:", nrow(num_df), "x", ncol(num_df), "\n")
+
+# 3) Correlation matrix
+R <- stats::cor(num_df, use = "pairwise.complete.obs")
+
+# 4) KMO
+kmo <- psych::KMO(R)
+cat("\n=== KMO ===\n"); print(kmo)
+
+# 5) Bartlett's test of sphericity
+bart <- psych::cortest.bartlett(R, n = nrow(num_df))
+cat("\n=== Bartlett's test ===\n"); print(bart)
+
+# 6) PCA without rotation (standardized)
+pca_fit <- stats::prcomp(num_df, center = TRUE, scale. = TRUE)
+eigs <- pca_fit$sdev^2
+
+# 7) Scree plot: display and save as PNG (base graphics)
+#    Display
+plot(seq_along(eigs), eigs, type = "b",
+     xlab = "Component", ylab = "Eigenvalue", main = "Scree Plot")
+abline(h = 1, lty = 2)
+
+#    Save
+png_file <- file.path(getwd(), paste0("scree_plot_", format(Sys.time(), "%Y%m%d-%H%M%S"), ".png"))
+png(png_file, width = 1200, height = 900, res = 150)
+plot(seq_along(eigs), eigs, type = "b",
+     xlab = "Component", ylab = "Eigenvalue", main = "Scree Plot")
+abline(h = 1, lty = 2)
+dev.off()
+cat("Scree plot saved to:", png_file, "\n")
+
+# 8) Kaiser criterion (eigenvalue > 1)
+k <- sum(eigs > 1)
+if (k < 1) { warning("No eigenvalue > 1. Keeping 1 component for practical reasons."); k <- 1 }
+cat("# Components with eigenvalue > 1:", k, "\n")
+
+# 9) PCA solution with psych::principal to obtain unrotated loadings,
+#    communalities, score coefficients, and variance explained
+pca_psych <- psych::principal(
+  r = num_df,
+  nfactors = k,
+  rotate = "none",
+  scores = TRUE,
+  covar = FALSE
+)
+
+# 10) Unrotated factor loadings
+loadings_df <- as.data.frame(unclass(pca_psych$loadings))
+loadings_df$Variable <- rownames(loadings_df)
+loadings_df <- loadings_df[, c("Variable", setdiff(names(loadings_df), "Variable")), drop = FALSE]
+
+cat("\n=== Unrotated factor loadings ===\n")
+print(loadings_df)
+
+# 11) Final communality estimates
+communalities_df <- data.frame(
+  Variable = names(pca_psych$communality),
+  Communality = round(as.numeric(pca_psych$communality), 6)
+)
+
+cat("\n=== Final communality estimates ===\n")
+print(communalities_df)
+
+# 12) Standardized score coefficients
+score_coef_df <- as.data.frame(pca_psych$weights)
+score_coef_df$Variable <- rownames(score_coef_df)
+score_coef_df <- score_coef_df[, c("Variable", setdiff(names(score_coef_df), "Variable")), drop = FALSE]
+
+cat("\n=== Standardized score coefficients ===\n")
+print(score_coef_df)
+
+# 13) Variance explained by each factor
+variance_df <- data.frame(
+  Factor = rownames(pca_psych$Vaccounted),
+  round(as.data.frame(pca_psych$Vaccounted), 6),
+  check.names = FALSE
+)
+
+cat("\n=== Variance explained by each factor ===\n")
+print(variance_df)
+
+# 14) Component scores
+scores <- as.data.frame(pca_psych$scores)
+names(scores) <- paste0("PC", seq_len(ncol(scores)))
+scores$Row_ID <- which(keep_idx)
+scores <- scores[, c("Row_ID", setdiff(names(scores), "Row_ID")), drop = FALSE]
+
+# 15) Export all outputs to .xlsx
+out_xlsx <- file.path(getwd(), paste0("PCA_outputs_over1_", format(Sys.time(), "%Y%m%d-%H%M%S"), ".xlsx"))
+writexl::write_xlsx(
+  list(
+    Component_Scores = scores,
+    Unrotated_Loadings = loadings_df,
+    Communalities = communalities_df,
+    Std_Score_Coefficients = score_coef_df,
+    Variance_Explained = variance_df
+  ),
+  path = out_xlsx
+)
+cat("Outputs saved to:", out_xlsx, "\n")
+
+# 16) Factor loading plot: display and save as PNG
+#     Uses the first two components
+loading_png <- file.path(getwd(), paste0("factor_loading_plot_", format(Sys.time(), "%Y%m%d-%H%M%S"), ".png"))
+
+# Display
+if (k >= 2) {
+  psych::fa.diagram(pca_psych, main = "Factor Loading Plot")
+} else {
+  plot(
+    loadings_df[[2]], rep(0, nrow(loadings_df)),
+    xlim = c(-1, 1), ylim = c(-1, 1),
+    xlab = "PC1", ylab = "",
+    main = "Factor Loading Plot"
+  )
+  text(loadings_df[[2]], rep(0, nrow(loadings_df)), labels = loadings_df$Variable, pos = 3)
+  abline(v = 0, lty = 2)
+}
+
+# Save
+png(loading_png, width = 1200, height = 900, res = 150)
+if (k >= 2) {
+  psych::fa.diagram(pca_psych, main = "Factor Loading Plot")
+} else {
+  plot(
+    loadings_df[[2]], rep(0, nrow(loadings_df)),
+    xlim = c(-1, 1), ylim = c(-1, 1),
+    xlab = "PC1", ylab = "",
+    main = "Factor Loading Plot"
+  )
+  text(loadings_df[[2]], rep(0, nrow(loadings_df)), labels = loadings_df$Variable, pos = 3)
+  abline(v = 0, lty = 2)
+}
+dev.off()
+cat("Factor loading plot saved to:", loading_png, "\n")
+
+cat("\nEND. Open the folder:", getwd(), "\n",
+    "You will find the files:\n - ", basename(png_file), "\n - ", basename(out_xlsx),
+    "\n - ", basename(loading_png), "\n", sep = "")
